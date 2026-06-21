@@ -1,0 +1,17 @@
+{
+  "name": "where-is-my-train-bridge",
+  "version": "1.0.0",
+  "description": "Node.js bridge server for RailKit SDK",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^22.12.0",
+    "railkit": "^4.0.1"
+  }
+}
