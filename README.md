@@ -59,7 +59,7 @@ cd Where-is-my-train-TUI
 sh scripts/setup-alpine.sh
 
 # Then every time:
-MOBILE_MODE=1 node bridge/server.js &
+MOBILE_MODE=1 node bridge/server.mobile.js &
 ./target/release/where-is-my-train
 ```
 
@@ -70,7 +70,7 @@ cd Where-is-my-train-TUI
 sh scripts/setup-termux.sh
 
 # Then every time:
-MOBILE_MODE=1 node bridge/server.js &
+MOBILE_MODE=1 node bridge/server.mobile.js &
 ./target/release/where-is-my-train
 ```
 

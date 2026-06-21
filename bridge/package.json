@@ -18,5 +18,8 @@
   },
   "optionalDependencies": {
     "puppeteer": "^22.12.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }
