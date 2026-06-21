@@ -15,3 +15,10 @@ unicode-width = "0.2"
 chrono = "0.4"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 fuzzy-matcher = "0.3.7"
+
+[profile.release]
+opt-level = "z"      # minimize binary size for mobile
+lto = true
+codegen-units = 1
+strip = true         # strip debug symbols — cuts binary from ~8MB to ~2MB
+panic = "abort"

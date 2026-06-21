@@ -49,3 +49,30 @@ cargo run
 ```
 
 The application will automatically spawn the Node.js background server on port 3456 and launch the terminal user interface.
+
+## Running on Mobile
+
+### iSH (iPhone/iPad — Alpine Linux)
+```sh
+git clone https://github.com/Aditya-Giri-4356/Where-is-my-train-TUI
+cd Where-is-my-train-TUI
+sh scripts/setup-alpine.sh
+
+# Then every time:
+MOBILE_MODE=1 node bridge/server.js &
+./target/release/where-is-my-train
+```
+
+### Termux (Android)
+```sh
+git clone https://github.com/Aditya-Giri-4356/Where-is-my-train-TUI
+cd Where-is-my-train-TUI
+sh scripts/setup-termux.sh
+
+# Then every time:
+MOBILE_MODE=1 node bridge/server.js &
+./target/release/where-is-my-train
+```
+
+> Live tracking uses direct HTTP fetch on mobile (no Chromium required).
+> Offline station search and train routes work identically on all platforms.
