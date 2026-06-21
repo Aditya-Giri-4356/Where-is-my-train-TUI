@@ -82,11 +82,36 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut app = App::new();
 
     loop {
+        app.tick_count = app.tick_count.wrapping_add(1);
+        
+        // Poll for background tracking completion
+        if let Some(rx) = &app.tracking_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(resp) => {
+                        if let Some(data) = resp.data {
+                            app.tracking_data = Some(data);
+                            app.status_msg = "Live tracking active".to_string();
+                        } else {
+                            app.tracking_error = resp.error.or(Some("No tracking data available".to_string()));
+                            app.status_msg = "Tracking failed".to_string();
+                        }
+                    }
+                    Err(e) => {
+                        app.tracking_error = Some(e);
+                        app.status_msg = "Error fetching live data".to_string();
+                    }
+                }
+                app.tracking_loading = false;
+                app.tracking_rx = None;
+            }
+        }
+
         // Draw
         terminal.draw(|f| ui::draw(f, &app))?;
 
-        // Poll events with a timeout (allows for periodic refresh)
-        if event::poll(Duration::from_millis(250))? {
+        // Poll events with a timeout (allows for periodic refresh and spinner animation)
+        if event::poll(Duration::from_millis(150))? {
             match event::read()? {
                 Event::Key(key) => handle_key(&mut app, key),
                 Event::Mouse(mouse) => handle_mouse(&mut app, mouse),

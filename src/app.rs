@@ -2,6 +2,7 @@ use crate::api::client::RailClient;
 use crate::api::types::*;
 use crate::utils;
 use crate::db::DbClient;
+use std::sync::mpsc;
 /// Which field the station picker is selecting for
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PickerField {
@@ -48,6 +49,8 @@ pub struct App {
     pub tracking_loading: bool,
     pub tracking_error: Option<String>,
     pub tracking_scroll: usize,
+    pub tracking_rx: Option<mpsc::Receiver<Result<TrackTrainResponse, String>>>,
+    pub tick_count: u64,
 
     // Status
     pub status_msg: String,
@@ -93,6 +96,8 @@ impl App {
             tracking_loading: false,
             tracking_error: None,
             tracking_scroll: 0,
+            tracking_rx: None,
+            tick_count: 0,
             status_msg,
             bridge_ok,
             client,
@@ -214,34 +219,27 @@ impl App {
         self.search_loading = false;
     }
 
-    /// Track a specific train
     pub fn track_train(&mut self, train_no: &str) {
         self.tracking_train_no = train_no.to_string();
         self.tracking_loading = true;
         self.tracking_error = None;
+        self.tracking_data = None; // clear previous data
         self.tracking_scroll = 0;
         self.status_msg = format!("Tracking train {}...", train_no);
 
         let date = utils::today_ddmmyyyy();
-        match self.client.track_train(train_no, Some(&date)) {
-            Ok(resp) => {
-                if let Some(data) = resp.data {
-                    self.tracking_data = Some(data);
-                    self.screen = Screen::Tracking;
-                    self.status_msg = "Live tracking active".to_string();
-                } else {
-                    self.tracking_error = resp.error.or(Some("No tracking data available".to_string()));
-                    self.status_msg = "Tracking failed".to_string();
-                    self.screen = Screen::Tracking;
-                }
-            }
-            Err(e) => {
-                self.tracking_error = Some(e.to_string());
-                self.status_msg = format!("Error: {}", e);
-                self.screen = Screen::Tracking;
-            }
-        }
-        self.tracking_loading = false;
+        let (tx, rx) = mpsc::channel();
+        self.tracking_rx = Some(rx);
+
+        let client = self.client.clone();
+        let t_no = train_no.to_string();
+        
+        std::thread::spawn(move || {
+            let result = client.track_train(&t_no, Some(&date));
+            let _ = tx.send(result.map_err(|e| e.to_string()));
+        });
+        
+        self.screen = Screen::Tracking;
     }
 
     /// Refresh tracking data

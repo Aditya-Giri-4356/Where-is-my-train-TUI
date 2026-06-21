@@ -22,6 +22,7 @@ impl fmt::Display for ApiError {
     }
 }
 
+#[derive(Clone)]
 pub struct RailClient {
     client: reqwest::blocking::Client,
     base_url: String,

@@ -8,6 +8,43 @@ use ratatui::{
 
 use crate::app::App;
 use super::widgets::{self, Theme};
+use ratatui::style::Color;
+
+fn days_spans(running_days: &str) -> Vec<Span<'static>> {
+    // running_days is a 7-char string like "1111111" or "1000001"
+    // or a text like "Daily" / "MON TUE" etc.
+    let day_labels = ["S", "M", "T", "W", "T", "F", "S"];
+    let mut spans = vec![Span::raw("  ")];
+    
+    let bits: Vec<bool> = if running_days.len() == 7 && running_days.chars().all(|c| c == '0' || c == '1') {
+        running_days.chars().map(|c| c == '1').collect()
+    } else if running_days.to_uppercase().contains("DAILY") || running_days == "1111111" {
+        vec![true; 7]
+    } else {
+        // Try to match day names
+        let upper = running_days.to_uppercase();
+        vec![
+            upper.contains("SUN"), upper.contains("MON"), upper.contains("TUE"),
+            upper.contains("WED"), upper.contains("THU"), upper.contains("FRI"),
+            upper.contains("SAT"),
+        ]
+    };
+
+    for (i, &runs) in bits.iter().enumerate() {
+        let style = if runs {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(day_labels[i].to_string(), style));
+        if i < 6 { spans.push(Span::raw("  ")); }
+    }
+    spans
+}
+
+fn format_running_days(running_days: &str) -> String {
+    running_days.to_string() // passthrough; days_spans handles the rendering
+}
 
 /// Draw the main home screen (matching the wireframe)
 pub fn draw_home(f: &mut Frame, app: &App) {
@@ -307,7 +344,7 @@ pub fn draw_train_select(f: &mut Frame, app: &App) {
     } else {
         let list_area = chunks[1];
         let visible_height = list_area.height.saturating_sub(2) as usize;
-        let lines_per_item = 3;
+        let lines_per_item = 4;
         let max_visible = visible_height / lines_per_item;
 
         let scroll = if app.search_selected >= max_visible {
@@ -334,54 +371,48 @@ pub fn draw_train_select(f: &mut Frame, app: &App) {
             };
 
             let prefix = if is_selected { " ▸ " } else { "   " };
-            let name_color = if is_selected {
-                Theme::CURRENT
-            } else {
-                Theme::FG
-            };
+            let name_color = if is_selected { Theme::CURRENT } else { Theme::FG };
 
             // Line 1: Train number + name
             lines.push(Line::from(vec![
                 Span::styled(prefix, bg_style.fg(name_color)),
                 Span::styled(
-                    format!("[{}] ", train.train_no),
-                    bg_style
-                        .fg(Theme::ACCENT)
-                        .add_modifier(Modifier::BOLD),
+                    format!(" {} ", train.train_no),
+                    Style::default().bg(Theme::ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    train.train_name.clone(),
+                    format!("  {}", train.train_name),
                     bg_style.fg(name_color).add_modifier(Modifier::BOLD),
                 ),
             ]));
 
             // Line 2: Time + duration
+            let dots = "·".repeat(8);
             let from_time = train.from_time.as_deref().unwrap_or("--:--");
             let to_time = train.to_time.as_deref().unwrap_or("--:--");
             let travel = train.travel_time.as_deref().unwrap_or("--");
             
             lines.push(Line::from(vec![
                 Span::styled("     ", bg_style),
-                Span::styled(
-                    format!("{} ········· {} ········· {}", from_time, travel, to_time),
-                    bg_style.fg(Theme::DIM),
-                ),
+                Span::styled(from_time, bg_style.fg(Color::Green)),
+                Span::styled(format!(" {} ", dots), bg_style.fg(Color::DarkGray)),
+                Span::styled(travel, bg_style.fg(Color::Yellow)),
+                Span::styled(format!(" {} ", dots), bg_style.fg(Color::DarkGray)),
+                Span::styled(to_time, bg_style.fg(Color::Green)),
             ]));
 
             // Line 3: Running days
-            let days_str = train.running_days.as_deref().unwrap_or("S M T W T F S");
-            lines.push(Line::from(vec![
-                Span::styled("     ", bg_style),
-                Span::styled(
-                    format!("{}", days_str),
-                    bg_style.fg(Theme::DIM),
-                ),
-            ]));
+            let days_raw = train.running_days.as_deref().unwrap_or("1111111");
+            let mut line3_spans = vec![Span::styled("     ", bg_style)];
+            for span in days_spans(days_raw) {
+                line3_spans.push(Span::styled(span.content, span.style.bg(bg_style.bg.unwrap_or(Color::Reset))));
+            }
+            lines.push(Line::from(line3_spans));
 
-            // Line 3: Separator
+            // Line 4: Separator
             lines.push(Line::from(vec![
                 Span::styled(
-                    "     ─────────────────────────────────────",
+                    "     ──────────────────────────────────────────────",
                     Style::default().fg(Theme::BORDER),
                 ),
             ]));
@@ -438,7 +469,7 @@ pub fn draw_tracking(f: &mut Frame, app: &App) {
         // ─── Train info header ──────────────────────────────────
         let header_text = format!(
             " 🚂 {} — {} ",
-            data.train_no, data.train_name
+            app.tracking_train_no, data.train_name
         );
         let header = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -458,11 +489,11 @@ pub fn draw_tracking(f: &mut Frame, app: &App) {
 
         // ─── Status note ────────────────────────────────────────
         let status_note = data
-            .status_note
+            .current_station
             .as_deref()
-            .unwrap_or("Fetching status...");
+            .unwrap_or("Position unknown");
         let last_update = data
-            .last_update
+            .current_delay
             .as_deref()
             .unwrap_or("--");
 
@@ -477,7 +508,7 @@ pub fn draw_tracking(f: &mut Frame, app: &App) {
             ]),
             Line::from(vec![
                 Span::styled(
-                    format!(" Last update: {} ", last_update),
+                    format!(" Delay: {} ", last_update),
                     Style::default().fg(Theme::DIM),
                 ),
             ]),
@@ -491,7 +522,16 @@ pub fn draw_tracking(f: &mut Frame, app: &App) {
         f.render_widget(status, chunks[1]);
 
         // ─── Timeline ───────────────────────────────────────────
-        widgets::draw_timeline(f, chunks[2], &data.timeline, app.tracking_scroll);
+        if data.stations.is_empty() {
+            let msg = Paragraph::new(
+                "No timeline data available.\nTrain may not be running today, or NTES did not return stop data.\nPress [R] to retry."
+            )
+            .style(Style::default().fg(Color::DarkGray))
+            .wrap(ratatui::widgets::Wrap { trim: true });
+            f.render_widget(msg, chunks[2]);
+        } else {
+            widgets::draw_timeline(f, chunks[2], &data.stations, app.tracking_scroll);
+        }
     } else if let Some(ref err) = app.tracking_error {
         // Error state
         let error_header = Paragraph::new(Line::from(vec![
@@ -549,7 +589,22 @@ pub fn draw_tracking(f: &mut Frame, app: &App) {
             width: chunks[0].width,
             height: chunks[0].height + chunks[1].height + chunks[2].height,
         };
-        widgets::draw_loading(f, merged, "Loading train status...");
+        
+        let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let frame = spinner_frames[(app.tick_count as usize / 3) % spinner_frames.len()];
+        let loading = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(format!("  {} ", frame), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled("Contacting NTES... (this takes ~15s on first load)", Style::default().fg(Color::White)),
+            ])
+        ]).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Theme::BORDER))
+                .style(Style::default().bg(Theme::BG)),
+        );
+        f.render_widget(loading, merged);
     }
 
     // ─── Help ───────────────────────────────────────────────────

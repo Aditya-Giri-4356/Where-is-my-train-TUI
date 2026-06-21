@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::api::types::TimelinePoint;
+use crate::api::types::TrackStation;
 
 /// Colors for the TUI theme (dark terminal aesthetic)
 pub struct Theme;
@@ -29,7 +29,7 @@ impl Theme {
 }
 
 /// Draw the station timeline (vertical track with nodes)
-pub fn draw_timeline(f: &mut Frame, area: Rect, timeline: &[TimelinePoint], scroll: usize) {
+pub fn draw_timeline(f: &mut Frame, area: Rect, timeline: &[TrackStation], scroll: usize) {
     if area.height < 3 || area.width < 10 {
         return;
     }
@@ -39,7 +39,7 @@ pub fn draw_timeline(f: &mut Frame, area: Rect, timeline: &[TimelinePoint], scro
 
     for (i, point) in timeline.iter().enumerate() {
         // Only show stoppages (skip intermediate)
-        if point.point_type == "intermediate" {
+        if !point.is_stopping {
             continue;
         }
 
@@ -65,47 +65,34 @@ pub fn draw_timeline(f: &mut Frame, area: Rect, timeline: &[TimelinePoint], scro
             Span::styled(station_label, name_style),
         ]));
 
-        // Details: ETA + delay + distance
-        if point.arrival.is_some() || point.departure.is_some() {
-            let arr_str = point.arrival.as_ref()
-                .and_then(|arr| arr.actual.as_deref().or(arr.scheduled.as_deref()))
-                .unwrap_or("--");
-            let dep_str = point.departure.as_ref()
-                .and_then(|dep| dep.actual.as_deref().or(dep.scheduled.as_deref()))
-                .unwrap_or("--");
+        let arr_str = if point.actual_arrival != "--" { &point.actual_arrival } else { &point.scheduled_arrival };
+        let dep_str = if point.actual_departure != "--" { &point.actual_departure } else { &point.scheduled_departure };
 
-            let delay_str = point.departure.as_ref()
-                .and_then(|dep| dep.delay.as_deref())
-                .or_else(|| point.arrival.as_ref().and_then(|arr| arr.delay.as_deref()))
-                .unwrap_or("");
+        let delay_str = if let Some(m) = point.delay_minutes {
+            if m == 0 { "On Time".to_string() } else { format!("{} min late", m) }
+        } else {
+            "".to_string()
+        };
 
-            let delay_color = if delay_str == "On Time" || delay_str.is_empty() {
-                Theme::ACCENT
-            } else {
-                Theme::WARN
-            };
+        let delay_color = if delay_str == "On Time" || delay_str.is_empty() {
+            Theme::ACCENT
+        } else {
+            Theme::WARN
+        };
 
-            let dist_str = point
-                .distance_km
-                .as_deref()
-                .unwrap_or("?");
+        let detail = format!(
+            "       ARR {} │ DEP {}",
+            arr_str, dep_str
+        );
+        lines.push(Line::from(vec![
+            Span::styled(detail, Style::default().fg(Theme::DIM)),
+        ]));
 
-            let pf_str = point.platform.as_deref().unwrap_or("-");
-
-            let detail = format!(
-                "       ARR {} │ DEP {} │ PF {} │ {}km",
-                arr_str, dep_str, pf_str, dist_str
-            );
+        if !delay_str.is_empty() {
+            let delay_line = format!("       ⏱ {}", delay_str);
             lines.push(Line::from(vec![
-                Span::styled(detail, Style::default().fg(Theme::DIM)),
+                Span::styled(delay_line, Style::default().fg(delay_color)),
             ]));
-
-            if !delay_str.is_empty() {
-                let delay_line = format!("       ⏱ {}", delay_str);
-                lines.push(Line::from(vec![
-                    Span::styled(delay_line, Style::default().fg(delay_color)),
-                ]));
-            }
         }
 
         // Connector line between stations

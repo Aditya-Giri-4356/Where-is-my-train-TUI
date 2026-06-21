@@ -1,0 +1,6 @@
+🚂 Scraping Bridge running on http://127.0.0.1:3456
+[TRACK] Fetching live status for 56714...
+[TRACK] Dismissed NTES overlay
+[TRACK] Table auto-loaded: false
+[TRACK] Table still not found — train may not be running today
+[TRACK] XHR not JSON, falling back to DOM scrape

@@ -10,37 +10,24 @@ pub struct TrackTrainResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TrackTrainData {
-    pub train_no: String,
     pub train_name: String,
-    pub date: Option<String>,
-    pub status_note: Option<String>,
-    pub last_update: Option<String>,
-    pub total_stations: Option<u32>,
-    pub current_station_code: Option<String>,
-    pub timeline: Vec<TimelinePoint>,
+    pub current_station: Option<String>,
+    pub current_delay: Option<String>,
+    pub stations: Vec<TrackStation>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TimelinePoint {
-    #[serde(rename = "type")]
-    pub point_type: String, // "stoppage" | "intermediate"
-    pub status: String, // "passed" | "current" | "upcoming"
-    pub station_code: String,
+pub struct TrackStation {
     pub station_name: String,
-    pub platform: Option<String>,
-    pub distance_km: Option<String>,
-    pub arrival: Option<ArrivalDeparture>,
-    pub departure: Option<ArrivalDeparture>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ArrivalDeparture {
-    pub scheduled: Option<String>,
-    pub actual: Option<String>,
-    pub delay: Option<String>,
+    pub station_code: String,
+    pub scheduled_arrival: String,
+    pub scheduled_departure: String,
+    pub actual_arrival: String,
+    pub actual_departure: String,
+    pub delay_minutes: Option<i32>,
+    pub is_stopping: bool,
+    pub status: String,
 }
 
 // ─── Train Info Response ────────────────────────────────────────

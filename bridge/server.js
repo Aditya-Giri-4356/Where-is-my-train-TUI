@@ -227,21 +227,264 @@ app.get('/api/search/:from/:to', async (req, res) => {
   });
 });
 
-// ─── Track a train (live status) ────────────────────────────────
-const RAIL_API = 'https://indianrailapi.com/api/v2';
-
+// ─── Track a train (live status) — Puppeteer with session cookies ───
 app.get('/api/track/:trainNo/:date?', async (req, res) => {
-  try {
-    const fetch = (await import('node-fetch')).default || require('node-fetch');
-    const r = await fetch(
-      `${RAIL_API}/livetrainstatus/apikey/irctc_0f2c8577ff37e464bed3408790ba7cac0fe16e353cfc4e34/trainnumber/${req.params.trainNo}/`
-    );
-    const data = await r.json();
-    res.json(data);
-  } catch (err) {
-    console.error(`[TRACK ERROR] ${req.params.trainNo}:`, err.message);
-    res.json({ success: false, error: err.message });
-  }
+  const { trainNo } = req.params;
+  const cacheKey = `track:${trainNo}`;
+
+  const cached = getCached(cacheKey);
+  if (cached) return res.json({ success: true, data: cached });
+
+  const SCRAPE_TIMEOUT = 25000; // 25 seconds max
+
+  Promise.race([
+    enqueue(() => executeScrape(async (page) => {
+      console.log(`[TRACK] Fetching live status for ${trainNo}...`);
+
+      // Step 1: Land on NTES to get session cookies
+      await page.goto('https://enquiry.indianrail.gov.in/mntes/', {
+        waitUntil: 'networkidle2',
+        timeout: 20000
+      });
+
+      // Step 1b: Dismiss the "X" overlay modal that NTES shows on first load
+      try {
+        await page.waitForSelector('button', { timeout: 5000 });
+        const dismissed = await page.evaluate(() => {
+          const buttons = Array.from(document.querySelectorAll('button'));
+          const closeBtn = buttons.find(b => b.innerText.trim() === 'X' || b.innerText.includes('X'));
+          if (closeBtn) { closeBtn.click(); return true; }
+          return false;
+        });
+        if (dismissed) {
+          console.log('[TRACK] Dismissed NTES overlay');
+          await new Promise(r => setTimeout(r, 800));
+        }
+      } catch (_) {
+        console.log('[TRACK] No overlay found, continuing');
+      }
+
+      // Step 1c: Click "Spot Your Train" link to pre-navigate to the right section
+      await page.evaluate(() => {
+        const links = Array.from(document.querySelectorAll('a'));
+        const spot = links.find(l => l.innerText.includes('Spot Your Train'));
+        if (spot) spot.click();
+      });
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Step 1d: Type into #trainNo
+      try {
+        await page.waitForSelector('#trainNo', { timeout: 5000 });
+        await page.type('#trainNo', trainNo, { delay: 100 });
+        await new Promise(r => setTimeout(r, 500));
+        // Press Enter to submit the autocomplete/form
+        await page.keyboard.press('Enter');
+      } catch (e) {
+        console.log('[TRACK] Failed to type into #trainNo:', e.message);
+      }
+
+      // Step 6: Check if table already loaded (NTES auto-loads after autocomplete)
+      await new Promise(r => setTimeout(r, 3000));
+      const tableAlreadyLoaded = await page.evaluate(() =>
+        !!document.querySelector('table.w3-table-all')
+      );
+      console.log(`[TRACK] Table auto-loaded: ${tableAlreadyLoaded}`);
+
+      if (!tableAlreadyLoaded) {
+        // Only try date selection + submit if table didn't auto-load
+        await page.evaluate(() => {
+          const select = document.querySelector('select[name="jDate"], select#jDate');
+          if (select && select.options.length > 0) {
+            select.selectedIndex = 0;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          // Click date links if present
+          const dateLinks = document.querySelectorAll('a[onclick*="date"], a[onclick*="Date"]');
+          if (dateLinks.length > 0) dateLinks[0].click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
+
+        // Try clicking any submit-like button
+        await page.evaluate(() => {
+          const btn = Array.from(document.querySelectorAll('button, input[type="submit"]'))
+            .find(el => {
+              const t = (el.innerText || el.value || '').toLowerCase();
+              return t.includes('get') || t.includes('status') || t.includes('search');
+            });
+          if (btn) btn.click();
+        });
+        await new Promise(r => setTimeout(r, 4000));
+      }
+
+      // Step 7: Wait for table — no fallback Enter (it clears the page)
+      const finalTableExists = await page.evaluate(() =>
+        !!document.querySelector('table.w3-table-all')
+      );
+      if (!finalTableExists) {
+        console.log('[TRACK] Table still not found — train may not be running today');
+      }
+
+      // Step 2: Fire XHR manually from within the page context to carry session cookies
+      const capturedData = await page.evaluate(async (tn) => {
+        try {
+          const fetchRes = await fetch(`https://enquiry.indianrail.gov.in/mntes/q?opt=TrainSearch&subOpt=liveRun&trainNo=${tn}&startDay=1`, {
+            headers: {
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': 'https://enquiry.indianrail.gov.in/mntes/'
+            },
+            credentials: 'include'
+          });
+          const text = await fetchRes.text();
+          if (text.startsWith('{') || text.startsWith('[')) {
+            return JSON.parse(text);
+          }
+          return null;
+        } catch (e) {
+          return null;
+        }
+      }, trainNo);
+
+      // Step 3: If XHR was captured, use it; otherwise scrape the DOM
+      if (capturedData) return capturedData;
+
+      // Step 10: DOM fallback — precise parser for w3-table-all structure
+      console.log('[TRACK] XHR not JSON, falling back to DOM scrape');
+      const domData = await page.evaluate((tn) => {
+
+        // ── Train name & current position header ──────────────────────
+        let trainName = `Train ${tn}`;
+        let currentStation = null;
+        let currentDelay = null;
+
+        // NTES renders "16848 SCT-MV EXP" in a heading above the table
+        const allText = document.body.innerText;
+        const nameMatch = allText.match(new RegExp(tn + '\\s+([A-Z0-9 \\-\\.]+)'));
+        if (nameMatch) trainName = (tn + ' ' + nameMatch[1]).trim().slice(0, 50);
+
+        // "Current Position" appears in the body text near the station name
+        const currentMatch = allText.match(/Current Position[:\s]+([A-Z\s]+(?:JN|JUNCTION|ROAD|HALT)?)/i);
+        if (currentMatch) currentStation = currentMatch[1].trim();
+
+        const delayMatch = allText.match(/(\d+)\s*min(?:utes?)?\s*(?:late|delay)/i);
+        if (delayMatch) currentDelay = delayMatch[1] + ' min late';
+
+        // ── Station rows from w3-table-all ────────────────────────────
+        const table = document.querySelector('table.w3-table-all');
+        if (!table) return { train_name: trainName, current_station: currentStation, current_delay: currentDelay, stations: [], debugText: allText.slice(0, 400) };
+
+        const rows = Array.from(table.querySelectorAll('tbody tr')).slice(1); // skip header
+
+        const stations = rows.map(row => {
+          const cells = row.querySelectorAll('td');
+          // Skip header-like rows (SRC/DST markers, "Yet to start" rows)
+          if (cells.length < 3) return null;
+          const rowText = (cells[2]?.innerText || '').trim();
+          if (rowText === '' || rowText === 'SRC' || rowText === 'DST') return null;
+
+          // td[2]: "STATION NAME - CODE<br><b>Non-Stopping</b>" or "Stoppage"
+          const stationCell = cells[2];
+          const stationRaw = stationCell.innerHTML || '';
+          const stationText = stationCell.innerText || '';
+
+          // Extract code using raw HTML to avoid innerText merging the code with "Non-Stopping" or "Stoppage"
+          const dashIdxHTML = stationRaw.indexOf(' - ');
+          let stationName = stationText.includes(' - ') ? stationText.slice(0, stationText.indexOf(' - ')).trim() : stationText.split('\n')[0].trim();
+          let stationCode = '';
+          if (dashIdxHTML > -1) {
+            const rightHtml = stationRaw.slice(dashIdxHTML + 3);
+            const rawCode = rightHtml.split(/<br/i)[0].replace(/<[^>]*>?/gm, '').trim();
+            const codeMatch = rawCode.match(/^([A-Z0-9]{2,5})/);
+            stationCode = codeMatch ? codeMatch[1] : rawCode;
+          }
+          const isStopping = !stationRaw.includes('Non-Stopping');
+
+          // td[3]: Sch Arr / Sch Dep separated by <br>
+          const getTimeParts = (cell) => {
+            // Replace <br> tags with a newline BEFORE reading text, so times don't merge
+            const raw = (cell.innerHTML || '').replace(/<br\s*\/?>/gi, '\n');
+            const tmp = document.createElement('div');
+            tmp.innerHTML = raw;
+            return (tmp.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+          };
+          const schedParts = getTimeParts(cells[3]);
+          const schArr = schedParts[0] || '--';
+          const schDep = schedParts[1] || '--';
+
+          // td[4]: Actual Arr / Actual Dep
+          const actualParts = getTimeParts(cells[4]);
+          const actArr = actualParts[0] || '--';
+          const actDep = actualParts[1] || '--';
+
+          // SVG circle color: orange = passed, green = current, gray = upcoming
+          const svg = cells[1] ? cells[1].querySelector('svg') : null;
+          const svgStyle = svg ? (svg.getAttribute('style') || '') : '';
+          let status = 'upcoming';
+          if (svgStyle.includes('orange')) status = 'passed';
+          if (svgStyle.includes('green'))  status = 'current';
+
+          // Compute delay: if actual arr exists and differs from scheduled
+          let delayMins = null;
+          if (actArr !== '--' && schArr !== '--') {
+            const parseTime = t => {
+              const m = t.match(/(\d+):(\d+)/);
+              return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : null;
+            };
+            const schM = parseTime(schArr);
+            const actM = parseTime(actArr);
+            if (schM !== null && actM !== null) {
+              let diff = actM - schM;
+              if (diff < -720) diff += 1440; // midnight crossover
+              delayMins = diff;
+            }
+          }
+
+          return {
+            station_name: stationName,
+            station_code: stationCode,
+            scheduled_arrival: schArr,
+            scheduled_departure: schDep,
+            actual_arrival: actArr,
+            actual_departure: actDep,
+            delay_minutes: delayMins,
+            is_stopping: isStopping,
+            status, // 'passed' | 'current' | 'upcoming'
+          };
+        }).filter(r => r && r.station_name.length > 1);
+
+        // Pick current station from first 'current' status row, or last 'passed' row
+        if (!currentStation) {
+          const cur = stations.find(s => s.status === 'current');
+          const lastPassed = [...stations].reverse().find(s => s.status === 'passed');
+          if (cur) currentStation = `${cur.station_name} (${cur.station_code})`;
+          else if (lastPassed) currentStation = `After ${lastPassed.station_name} (${lastPassed.station_code})`;
+        }
+
+        return { train_name: trainName, current_station: currentStation, current_delay: currentDelay, stations };
+      }, trainNo);
+
+      return domData;
+    })),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Scrape timeout after 25s')), SCRAPE_TIMEOUT)
+    )
+  ])
+  .then(data => {
+    setCached(cacheKey, data);
+    res.json({ success: true, data });
+  })
+  .catch(err => {
+    console.error(`[TRACK ERROR] ${trainNo}:`, err.message);
+    res.json({
+      success: false,
+      error: 'Live tracking unavailable',
+      data: {
+        train_name: `Train ${trainNo}`,
+        current_station: null,
+        stations: [],
+        note: 'NTES is unreachable or train is not running today'
+      }
+    });
+  });
 });
 
 // ─── Train information + route ──────────────────────────────────

@@ -44,7 +44,7 @@ impl DbClient {
             })
         })?;
 
-        let mut stations: Vec<Station> = Vec::new();
+        let mut scored: Vec<(i64, Station)> = Vec::new();
         for st in station_iter {
             if let Ok(st) = st {
                 // If the query exactly matches the code, prioritize it heavily
@@ -57,20 +57,19 @@ impl DbClient {
                 if st.code == "TPJ" || st.code == "TPJN" {
                     search_target.push_str(" TRICHY TIRUCHIRAPPALLI");
                 } else if st.code == "TJ" {
-                    search_target.push_str(" TANJORE");
+                    search_target.push_str(" TANJORE THANJAVUR");
                 }
 
                 if let Some(score) = self.matcher.fuzzy_match(&search_target, query) {
                     if score > 20 { // Threshold for decent matches
-                        stations.push(st);
+                        scored.push((score, st));
                     }
                 }
             }
         }
 
-        // Just return top 15 results to not overwhelm the UI
-        stations.truncate(15);
-        Ok(stations)
+        scored.sort_by(|a, b| b.0.cmp(&a.0));  // highest score first
+        Ok(scored.into_iter().take(15).map(|(_, s)| s).collect())
     }
 
     pub fn get_trains_between_stations(&self, from: &str, to: &str) -> Result<Vec<TrainRouteResult>> {
@@ -97,9 +96,9 @@ impl DbClient {
             Ok(TrainRouteResult {
                 train_number,
                 train_name,
-                departure_time,
-                arrival_time,
-                duration: "N/A".to_string(), // In a real app we'd compute time diff
+                departure_time: departure_time.clone(),
+                arrival_time: arrival_time.clone(),
+                duration: compute_duration(&departure_time, &arrival_time),
             })
         })?;
 
@@ -111,5 +110,21 @@ impl DbClient {
         }
 
         Ok(results)
+    }
+}
+
+fn compute_duration(dep: &str, arr: &str) -> String {
+    let parse = |t: &str| -> Option<i32> {
+        let parts: Vec<&str> = t.splitn(2, ':').collect();
+        if parts.len() < 2 { return None; }
+        let h: i32 = parts[0].parse().ok()?;
+        let m: i32 = parts[1][..2.min(parts[1].len())].parse().ok()?;
+        Some(h * 60 + m)
+    };
+    if let (Some(d), Some(a)) = (parse(dep), parse(arr)) {
+        let diff = if a >= d { a - d } else { a + 1440 - d }; // handle midnight crossover
+        format!("{} hr {} min", diff / 60, diff % 60)
+    } else {
+        "N/A".to_string()
     }
 }
