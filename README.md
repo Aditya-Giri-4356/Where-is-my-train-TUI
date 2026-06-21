@@ -1,4 +1,4 @@
-# Where Is My Train - Terminal Edition
+# Where Is My Train TUI
 
 Where Is My Train TUI is a terminal-based clone of the popular Indian Railways application. It allows you to search for stations, find direct routes between stations (including local and passenger trains), and track live train status directly from your terminal.
 
