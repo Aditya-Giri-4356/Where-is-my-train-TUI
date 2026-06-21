@@ -318,7 +318,7 @@ app.get('/api/track/:trainNo/:date?', async (req, res) => {
 
       // Step 7: Wait for table — no fallback Enter (it clears the page)
       const finalTableExists = await page.evaluate(() =>
-        !!document.querySelector('table.w3-table-all')
+        !!document.querySelector('table.w3-table-all, div.stopRow')
       );
       if (!finalTableExists) {
         console.log('[TRACK] Table still not found — train may not be running today');
@@ -368,88 +368,159 @@ app.get('/api/track/:trainNo/:date?', async (req, res) => {
         const delayMatch = allText.match(/(\d+)\s*min(?:utes?)?\s*(?:late|delay)/i);
         if (delayMatch) currentDelay = delayMatch[1] + ' min late';
 
-        // ── Station rows from w3-table-all ────────────────────────────
+        // ── Station rows from w3-table-all or div.stopRow ────────────────
         const table = document.querySelector('table.w3-table-all');
-        if (!table) return { train_name: trainName, current_station: currentStation, current_delay: currentDelay, stations: [], debugText: allText.slice(0, 400) };
+        const divRows = Array.from(document.querySelectorAll('div.stopRow'));
+        
+        if (!table && divRows.length === 0) {
+          return { train_name: trainName, current_station: currentStation, current_delay: currentDelay, stations: [], debugText: allText.slice(0, 400) };
+        }
 
-        const rows = Array.from(table.querySelectorAll('tbody tr')).slice(1); // skip header
+        let stations = [];
 
-        const stations = rows.map(row => {
-          const cells = row.querySelectorAll('td');
-          // Skip header-like rows (SRC/DST markers, "Yet to start" rows)
-          if (cells.length < 3) return null;
-          const rowText = (cells[2]?.innerText || '').trim();
-          if (rowText === '' || rowText === 'SRC' || rowText === 'DST') return null;
+        if (table) {
+          const rows = Array.from(table.querySelectorAll('tbody tr')).slice(1); // skip header
+          stations = rows.map(row => {
+            const cells = row.querySelectorAll('td');
+            // Skip header-like rows (SRC/DST markers, "Yet to start" rows)
+            if (cells.length < 3) return null;
+            const rowText = (cells[2]?.innerText || '').trim();
+            if (rowText === '' || rowText === 'SRC' || rowText === 'DST') return null;
 
-          // td[2]: "STATION NAME - CODE<br><b>Non-Stopping</b>" or "Stoppage"
-          const stationCell = cells[2];
-          const stationRaw = stationCell.innerHTML || '';
-          const stationText = stationCell.innerText || '';
+            // td[2]: "STATION NAME - CODE<br><b>Non-Stopping</b>" or "Stoppage"
+            const stationCell = cells[2];
+            const stationRaw = stationCell.innerHTML || '';
+            const stationText = stationCell.innerText || '';
 
-          // Extract code using raw HTML to avoid innerText merging the code with "Non-Stopping" or "Stoppage"
-          const dashIdxHTML = stationRaw.indexOf(' - ');
-          let stationName = stationText.includes(' - ') ? stationText.slice(0, stationText.indexOf(' - ')).trim() : stationText.split('\n')[0].trim();
-          let stationCode = '';
-          if (dashIdxHTML > -1) {
-            const rightHtml = stationRaw.slice(dashIdxHTML + 3);
-            const rawCode = rightHtml.split(/<br/i)[0].replace(/<[^>]*>?/gm, '').trim();
-            const codeMatch = rawCode.match(/^([A-Z0-9]{2,5})/);
-            stationCode = codeMatch ? codeMatch[1] : rawCode;
-          }
-          const isStopping = !stationRaw.includes('Non-Stopping');
-
-          // td[3]: Sch Arr / Sch Dep separated by <br>
-          const getTimeParts = (cell) => {
-            // Replace <br> tags with a newline BEFORE reading text, so times don't merge
-            const raw = (cell.innerHTML || '').replace(/<br\s*\/?>/gi, '\n');
-            const tmp = document.createElement('div');
-            tmp.innerHTML = raw;
-            return (tmp.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-          };
-          const schedParts = getTimeParts(cells[3]);
-          const schArr = schedParts[0] || '--';
-          const schDep = schedParts[1] || '--';
-
-          // td[4]: Actual Arr / Actual Dep
-          const actualParts = getTimeParts(cells[4]);
-          const actArr = actualParts[0] || '--';
-          const actDep = actualParts[1] || '--';
-
-          // SVG circle color: orange = passed, green = current, gray = upcoming
-          const svg = cells[1] ? cells[1].querySelector('svg') : null;
-          const svgStyle = svg ? (svg.getAttribute('style') || '') : '';
-          let status = 'upcoming';
-          if (svgStyle.includes('orange')) status = 'passed';
-          if (svgStyle.includes('green'))  status = 'current';
-
-          // Compute delay: if actual arr exists and differs from scheduled
-          let delayMins = null;
-          if (actArr !== '--' && schArr !== '--') {
-            const parseTime = t => {
-              const m = t.match(/(\d+):(\d+)/);
-              return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : null;
-            };
-            const schM = parseTime(schArr);
-            const actM = parseTime(actArr);
-            if (schM !== null && actM !== null) {
-              let diff = actM - schM;
-              if (diff < -720) diff += 1440; // midnight crossover
-              delayMins = diff;
+            // Extract code using raw HTML to avoid innerText merging the code with "Non-Stopping" or "Stoppage"
+            const dashIdxHTML = stationRaw.indexOf(' - ');
+            let stationName = stationText.includes(' - ') ? stationText.slice(0, stationText.indexOf(' - ')).trim() : stationText.split('\n')[0].trim();
+            let stationCode = '';
+            if (dashIdxHTML > -1) {
+              const rightHtml = stationRaw.slice(dashIdxHTML + 3);
+              const rawCode = rightHtml.split(/<br/i)[0].replace(/<[^>]*>?/gm, '').trim();
+              const codeMatch = rawCode.match(/^([A-Z0-9]{2,5})/);
+              stationCode = codeMatch ? codeMatch[1] : rawCode;
             }
-          }
+            const isStopping = !stationRaw.includes('Non-Stopping');
 
-          return {
-            station_name: stationName,
-            station_code: stationCode,
-            scheduled_arrival: schArr,
-            scheduled_departure: schDep,
-            actual_arrival: actArr,
-            actual_departure: actDep,
-            delay_minutes: delayMins,
-            is_stopping: isStopping,
-            status, // 'passed' | 'current' | 'upcoming'
-          };
-        }).filter(r => r && r.station_name.length > 1);
+            // td[3]: Sch Arr / Sch Dep separated by <br>
+            const getTimeParts = (cell) => {
+              // Replace <br> tags with a newline BEFORE reading text, so times don't merge
+              const raw = (cell.innerHTML || '').replace(/<br\s*\/?>/gi, '\n');
+              const tmp = document.createElement('div');
+              tmp.innerHTML = raw;
+              return (tmp.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+            };
+            const schedParts = getTimeParts(cells[3]);
+            const schArr = schedParts[0] || '--';
+            const schDep = schedParts[1] || '--';
+
+            // td[4]: Actual Arr / Actual Dep
+            const actualParts = getTimeParts(cells[4]);
+            const actArr = actualParts[0] || '--';
+            const actDep = actualParts[1] || '--';
+
+            // SVG circle color: orange = passed, green = current, gray = upcoming
+            const svg = cells[1] ? cells[1].querySelector('svg') : null;
+            const svgStyle = svg ? (svg.getAttribute('style') || '') : '';
+            let status = 'upcoming';
+            if (svgStyle.includes('orange')) status = 'passed';
+            if (svgStyle.includes('green'))  status = 'current';
+
+            // Compute delay: if actual arr exists and differs from scheduled
+            let delayMins = null;
+            if (actArr !== '--' && schArr !== '--') {
+              const parseTime = t => {
+                const m = t.match(/(\d+):(\d+)/);
+                return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : null;
+              };
+              const schM = parseTime(schArr);
+              const actM = parseTime(actArr);
+              if (schM !== null && actM !== null) {
+                let diff = actM - schM;
+                if (diff < -720) diff += 1440; // midnight crossover
+                delayMins = diff;
+              }
+            }
+
+            return {
+              station_name: stationName,
+              station_code: stationCode,
+              scheduled_arrival: schArr,
+              scheduled_departure: schDep,
+              actual_arrival: actArr,
+              actual_departure: actDep,
+              delay_minutes: delayMins,
+              is_stopping: isStopping,
+              status, // 'passed' | 'current' | 'upcoming'
+            };
+          }).filter(r => r && r.station_name.length > 1);
+        } else if (divRows.length > 0) {
+          stations = divRows.map(row => {
+            const stationElem = row.querySelector('div[style*="float:left;flex:1;"] b');
+            let stationName = stationElem ? stationElem.innerText.trim() : '';
+            if (!stationName) return null;
+            
+            const codeElem = row.querySelector('div[style*="float:left;padding: 0px;"] b');
+            let stationCode = '';
+            if (codeElem) {
+               stationCode = codeElem.innerText.split(' ')[0].trim();
+            }
+
+            const arrDiv = row.querySelector('div[style*="width:100px"][style*="float:left"]');
+            const depDiv = row.querySelector('div[style*="width:100px"][style*="float:right"]');
+            
+            const arrParts = arrDiv ? Array.from(arrDiv.querySelectorAll('span')).map(s => s.innerText.trim()).filter(Boolean) : [];
+            const depParts = depDiv ? Array.from(depDiv.querySelectorAll('span')).map(s => s.innerText.trim()).filter(Boolean) : [];
+
+            const schArr = (arrParts[0] && arrParts[0] !== 'SRC' && arrParts[0] !== 'DST') ? arrParts[0] : '--';
+            let actArr = '--';
+            if (arrParts[1] && arrParts[1] !== 'SRC' && arrParts[1] !== 'DST') {
+              actArr = arrParts[1].split('\n')[0].replace('*', '').trim();
+            }
+
+            const schDep = (depParts[0] && depParts[0] !== 'SRC' && depParts[0] !== 'DST') ? depParts[0] : '--';
+            let actDep = '--';
+            if (depParts[1] && depParts[1] !== 'SRC' && depParts[1] !== 'DST') {
+              actDep = depParts[1].split('\n')[0].replace('*', '').trim();
+            }
+
+            let status = 'upcoming';
+            const imgHtml = row.innerHTML.toLowerCase();
+            if (imgHtml.includes('track_red') || imgHtml.includes('track_orange')) status = 'passed';
+            else if (imgHtml.includes('track_green') || imgHtml.includes('blink')) status = 'current';
+            else if (actDep !== '--' && schDep !== '--') status = 'passed';
+            else if (actArr !== '--' && schArr !== '--') status = 'passed'; // fallback if no images match
+
+            let delayMins = null;
+            if (actArr !== '--' && schArr !== '--') {
+              const parseTime = t => {
+                const m = t.match(/(\d+):(\d+)/);
+                return m ? parseInt(m[1]) * 60 + parseInt(m[2]) : null;
+              };
+              const schM = parseTime(schArr);
+              const actM = parseTime(actArr);
+              if (schM !== null && actM !== null) {
+                let diff = actM - schM;
+                if (diff < -720) diff += 1440;
+                delayMins = diff;
+              }
+            }
+
+            return {
+              station_name: stationName,
+              station_code: stationCode,
+              scheduled_arrival: schArr,
+              scheduled_departure: schDep,
+              actual_arrival: actArr,
+              actual_departure: actDep,
+              delay_minutes: delayMins,
+              is_stopping: true,
+              status
+            };
+          }).filter(r => r && r.station_name.length > 1);
+        }
 
         // Pick current station from first 'current' status row, or last 'passed' row
         if (!currentStation) {
