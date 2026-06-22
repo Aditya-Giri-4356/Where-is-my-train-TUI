@@ -63,18 +63,33 @@ fn spawn_bridge() -> Option<Child> {
         .map(|d| d.join("bridge"))
         .unwrap_or_else(|| std::path::PathBuf::from("bridge"));
 
-    if !bridge_dir.join("node_modules").exists() {
-        eprintln!("Bridge node_modules not found. Run: cd bridge && npm install");
-        return None;
-    }
+    // Determine which server script to run:
+    // - If node_modules exists → desktop mode with server.js
+    // - If server.mobile.js exists → mobile mode, zero dependencies
+    let has_node_modules = bridge_dir.join("node_modules").exists();
+    let has_mobile_server = bridge_dir.join("server.mobile.js").exists();
 
-    Command::new("node")
-        .arg("server.js")
+    let (script, env_mobile) = if has_node_modules {
+        ("server.js", false)
+    } else if has_mobile_server {
+        ("server.mobile.js", true)
+    } else {
+        eprintln!("Bridge not available. Run: cd bridge && npm install");
+        eprintln!("  OR for mobile (iSH/Termux): server.mobile.js should exist in bridge/");
+        return None;
+    };
+
+    let mut cmd = Command::new("node");
+    cmd.arg(script)
         .current_dir(&bridge_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
+        .stderr(Stdio::null());
+
+    if env_mobile {
+        cmd.env("MOBILE_MODE", "1");
+    }
+
+    cmd.spawn().ok()
 }
 
 /// Main event loop

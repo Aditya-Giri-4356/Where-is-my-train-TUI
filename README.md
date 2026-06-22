@@ -52,27 +52,30 @@ The application will automatically spawn the Node.js background server on port 3
 
 ## Running on Mobile
 
+The mobile bridge (`server.mobile.js`) uses **zero npm dependencies** — only Node.js built-in modules. No `npm install` required.
+
 ### iSH (iPhone/iPad — Alpine Linux)
 ```sh
 git clone https://github.com/Aditya-Giri-4356/Where-is-my-train-TUI
 cd Where-is-my-train-TUI
-sh scripts/setup-alpine.sh
+sh scripts/setup-alpine.sh    # installs nodejs, git, curl via apk
 
 # Then every time:
-MOBILE_MODE=1 node bridge/server.js &
-./target/release/where-is-my-train
+node bridge/server.mobile.js &
+./where-is-my-train
 ```
 
 ### Termux (Android)
 ```sh
 git clone https://github.com/Aditya-Giri-4356/Where-is-my-train-TUI
 cd Where-is-my-train-TUI
-sh scripts/setup-termux.sh
+sh scripts/setup-termux.sh    # installs nodejs, git, curl via pkg
 
 # Then every time:
-MOBILE_MODE=1 node bridge/server.js &
-./target/release/where-is-my-train
+node bridge/server.mobile.js &
+./where-is-my-train
 ```
 
-> Live tracking uses direct HTTP fetch on mobile (no Chromium required).
+> **No `npm install` needed on mobile.** The mobile bridge is a single self-contained file.
 > Offline station search and train routes work identically on all platforms.
+> Live tracking uses NTES direct HTTP fetch (no Chromium/Puppeteer required).
