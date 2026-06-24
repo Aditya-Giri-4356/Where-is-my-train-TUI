@@ -62,7 +62,7 @@ sh scripts/setup-alpine.sh    # installs nodejs, git, curl via apk
 
 # Then every time:
 node bridge/server.mobile.js &
-./where-is-my-train
+node mobile-tui.js
 ```
 
 ### Termux (Android)
@@ -73,9 +73,9 @@ sh scripts/setup-termux.sh    # installs nodejs, git, curl via pkg
 
 # Then every time:
 node bridge/server.mobile.js &
-./where-is-my-train
+node mobile-tui.js
 ```
 
-> **No `npm install` needed on mobile.** The mobile bridge is a single self-contained file.
+> **No `npm install` needed on mobile.** The mobile bridge and mobile TUI have zero dependencies.
 > Offline station search and train routes work identically on all platforms.
 > Live tracking uses NTES direct HTTP fetch (no Chromium/Puppeteer required).

@@ -315,17 +315,157 @@ async function handleTrainInfo(req, res, trainNo) {
   });
 }
 
-// ─── Route: /api/search/:from/:to ──────────────────────────────
+// ─── Route: /api/stations/search/:query ─────────────────────────
+async function handleStationSearch(req, res, query) {
+  const cacheKey = `stn:${query.toLowerCase()}`;
+  const cached = getCached(cacheKey);
+  if (cached) return sendJson(res, 200, { success: true, data: cached });
+
+  try {
+    // Use NTES autocomplete XHR
+    const homeRes = await fetchHttps('https://enquiry.indianrail.gov.in/mntes/');
+    const cookies = homeRes.cookies;
+
+    const searchRes = await fetchHttps(
+      `https://enquiry.indianrail.gov.in/mntes/q?opt=StnAutoComplete&subOpt=fuz&q=${encodeURIComponent(query)}`,
+      {
+        headers: {
+          'Cookie': cookies,
+          'X-Requested-With': 'XMLHttpRequest',
+          'Referer': 'https://enquiry.indianrail.gov.in/mntes/',
+        },
+      }
+    );
+
+    // NTES returns lines like "NDLS - NEW DELHI" or JSON array
+    const body = searchRes.body.trim();
+    let stations = [];
+
+    try {
+      // Try JSON first
+      const json = JSON.parse(body);
+      if (Array.isArray(json)) {
+        stations = json.map(item => {
+          if (typeof item === 'string') {
+            const m = item.match(/^([A-Z0-9]+)\s*-\s*(.+)/);
+            return m ? { code: m[1].trim(), name: m[2].trim() } : { code: item, name: item };
+          }
+          return { code: item.code || item.stnCode || '', name: item.name || item.stnName || '' };
+        });
+      }
+    } catch (_) {
+      // Plain text — one station per line
+      stations = body.split('\n').filter(Boolean).map(line => {
+        const m = line.match(/^([A-Z0-9]+)\s*-\s*(.+)/);
+        return m ? { code: m[1].trim(), name: m[2].trim() } : { code: line.trim(), name: line.trim() };
+      });
+    }
+
+    if (stations.length > 0) setCached(cacheKey, stations);
+    sendJson(res, 200, { success: true, data: stations });
+  } catch (err) {
+    console.error(`[STN SEARCH ERROR] ${query}:`, err.message);
+    // Fallback: return popular stations matching query
+    const fallback = POPULAR_STATIONS.filter(s =>
+      s.code.toLowerCase().includes(query.toLowerCase()) ||
+      s.name.toLowerCase().includes(query.toLowerCase())
+    );
+    sendJson(res, 200, { success: true, data: fallback });
+  }
+}
+
+// ─── Route: /api/search/:from/:to (trains between stations) ────
 async function handleSearch(req, res, from, to) {
   const cacheKey = `search:${from}:${to}`;
   const cached = getCached(cacheKey);
   if (cached) return sendJson(res, 200, { success: true, data: cached });
 
-  // On mobile, train search between stations is handled offline by the Rust
-  // SQLite database. This endpoint is only used as a fallback if the DB
-  // doesn't have the route. Return empty so the TUI shows "no trains found".
-  sendJson(res, 200, { success: true, data: [] });
+  try {
+    // Use NTES "Trains Between Stations" XHR
+    const homeRes = await fetchHttps('https://enquiry.indianrail.gov.in/mntes/');
+    const cookies = homeRes.cookies;
+
+    const searchRes = await fetchHttps(
+      `https://enquiry.indianrail.gov.in/mntes/q?opt=TbsLive&subOpt=fbs&stnFrom=${encodeURIComponent(from)}&stnTo=${encodeURIComponent(to)}`,
+      {
+        headers: {
+          'Cookie': cookies,
+          'X-Requested-With': 'XMLHttpRequest',
+          'Referer': 'https://enquiry.indianrail.gov.in/mntes/',
+        },
+      }
+    );
+
+    const html = searchRes.body;
+    let trains = [];
+
+    // Try JSON parse first
+    try {
+      const json = JSON.parse(html);
+      if (Array.isArray(json)) {
+        trains = json.map(t => ({
+          train_no: t.trainNo || t.train_no || t.number || '',
+          train_name: t.trainName || t.train_name || t.name || '',
+          from_time: t.depTime || t.from_time || '--',
+          to_time: t.arrTime || t.to_time || '--',
+          travel_time: t.travelTime || t.duration || '--',
+          running_days: t.runDays || t.running_days || '--',
+        }));
+      }
+    } catch (_) {
+      // Parse HTML table
+      const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/i);
+      if (tableMatch) {
+        const rows = extractBetween(tableMatch[1], '<tr', '</tr>');
+        for (let i = 1; i < rows.length; i++) {
+          const cells = extractBetween(rows[i], '<td', '</td>');
+          if (cells.length < 4) continue;
+          const trainText = stripTags(cells[0] || '');
+          const noMatch = trainText.match(/(\d{5})/);
+          if (!noMatch) continue;
+          trains.push({
+            train_no: noMatch[1],
+            train_name: trainText.replace(noMatch[1], '').trim().replace(/^[-\s]+/, ''),
+            from_time: stripTags(cells[1] || '') || '--',
+            to_time: stripTags(cells[2] || '') || '--',
+            travel_time: stripTags(cells[3] || '') || '--',
+            running_days: stripTags(cells[4] || '') || '--',
+          });
+        }
+      }
+    }
+
+    if (trains.length > 0) setCached(cacheKey, trains);
+    sendJson(res, 200, { success: true, data: trains });
+  } catch (err) {
+    console.error(`[SEARCH ERROR] ${from}->${to}:`, err.message);
+    sendJson(res, 200, { success: true, data: [] });
+  }
 }
+
+// ─── Popular stations fallback ──────────────────────────────────
+const POPULAR_STATIONS = [
+  { code: 'NDLS', name: 'NEW DELHI' },
+  { code: 'MAS', name: 'MGR CHENNAI CTL' },
+  { code: 'CSTM', name: 'CSMT MUMBAI' },
+  { code: 'HWH', name: 'HOWRAH JN' },
+  { code: 'SBC', name: 'KSR BENGALURU' },
+  { code: 'SC', name: 'SECUNDERABAD JN' },
+  { code: 'LKO', name: 'LUCKNOW NR' },
+  { code: 'JP', name: 'JAIPUR' },
+  { code: 'ADI', name: 'AHMEDABAD JN' },
+  { code: 'PNBE', name: 'PATNA JN' },
+  { code: 'BPL', name: 'BHOPAL JN' },
+  { code: 'TPJ', name: 'TIRUCHIRAPPALLI JN' },
+  { code: 'TJ', name: 'THANJAVUR JN' },
+  { code: 'CNB', name: 'KANPUR CENTRAL' },
+  { code: 'AGC', name: 'AGRA CANTT' },
+  { code: 'BBS', name: 'BHUBANESWAR' },
+  { code: 'GHY', name: 'GUWAHATI' },
+  { code: 'CDG', name: 'CHANDIGARH' },
+  { code: 'PUNE', name: 'PUNE JN' },
+  { code: 'NGP', name: 'NAGPUR' },
+];
 
 // ─── HTTP Router ────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
@@ -346,6 +486,17 @@ const server = http.createServer(async (req, res) => {
     // /api/health
     if (path === '/api/health') {
       return handleHealth(req, res);
+    }
+
+    // /api/stations/search/:query
+    const stnMatch = path.match(/^\/api\/stations\/search\/(.+)$/);
+    if (stnMatch) {
+      return await handleStationSearch(req, res, decodeURIComponent(stnMatch[1]));
+    }
+
+    // /api/stations/popular
+    if (path === '/api/stations/popular') {
+      return sendJson(res, 200, { success: true, data: POPULAR_STATIONS });
     }
 
     // /api/track/:trainNo or /api/track/:trainNo/:date
